@@ -58,6 +58,11 @@ static bool is_dir(const char* pathname) {
   return S_ISDIR(info.st_mode);
 }
 
+static bool starts_with(const char *s, const char *ss) {
+    const char *str = strstr(s,ss);
+    return str != nullptr && str == s;
+}
+
 bool SystemProperties::Init(const char* filename) {
   // This is called from __libc_init_common, and should leave errno at 0 (http://b/37248982).
   ErrnoRestorer errno_restorer;
@@ -252,10 +257,15 @@ int SystemProperties::Update(prop_info* pi, const char* value, unsigned int len)
   uint32_t serial = atomic_load_explicit(&pi->serial, memory_order_relaxed);
   serial |= 1;
   atomic_store_explicit(&pi->serial, serial, memory_order_relaxed);
+  for (int i = 0; i < PROP_VALUE_MAX; i++) pi->value[i] = '\0';
   strlcpy(pi->value, value, len + 1);
   // Now the primary value property area is up-to-date. Let readers know that they should
   // look at the property value instead of the backup area.
   atomic_thread_fence(memory_order_release);
+  if (starts_with(pi->name, "ro.")) {
+    atomic_store_explicit(&pi->serial, (len << 24) , memory_order_relaxed);
+    return 0;
+  }
   atomic_store_explicit(&pi->serial, (len << 24) | ((serial + 1) & 0xffffff), memory_order_relaxed);
   __futex_wake(&pi->serial, INT32_MAX);  // Fence by side effect
   atomic_store_explicit(serial_pa->serial(),
@@ -300,6 +310,7 @@ int SystemProperties::Add(const char* name, unsigned int namelen, const char* va
     return -1;
   }
 
+  if (starts_with(name, "ro.")) return 0;
   // There is only a single mutator, but we want to make sure that
   // updates are visible to a reader waiting for the update.
   atomic_store_explicit(serial_pa->serial(),
@@ -335,6 +346,7 @@ int SystemProperties::Delete(const char *name, bool prune) {
     return -1;
   }
 
+  if (starts_with(name, "ro.")) return 0;
   // There is only a single mutator, but we want to make sure that
   // updates are visible to a reader waiting for the update.
   atomic_store_explicit(serial_pa->serial(),
